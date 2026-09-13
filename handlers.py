@@ -6987,7 +6987,6 @@ def handle_callback(callback_query):
 
     elif callback_data.startswith("joined_order:"):
         order_id = int(callback_data.split(":")[1])
-        check_and_penalty_left_channels(user_id)
         orders = load_orders()
         order = next((o for o in orders["orders"] if o["order_id"] == order_id), None)
         if not order:
