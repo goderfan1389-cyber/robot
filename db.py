@@ -144,17 +144,16 @@ def doc_has_data(name):
     return True
 
 def export_database_sql():
-    """ساخت بکاپ SQL امن از PostgreSQL — بدون تراکنش یکپارچه، با ترتیب صحیح constraintها."""
+    """ساخت بکاپ SQL امن — بدون FK constraintها."""
 
     from psycopg2 import sql
-    from psycopg2.extras import Json
 
     def _run(conn):
         output = []
 
         output.append("-- ARKA PostgreSQL FULL BACKUP")
         output.append("-- Generated automatically by ARKA Bot")
-        output.append("-- Each statement is independent (no wrapping BEGIN/COMMIT)")
+        output.append("-- Foreign Key constraints are skipped for safe import")
         output.append("")
 
         with conn.cursor() as cur:
@@ -216,43 +215,21 @@ def export_database_sql():
                 output.append("")
 
             # ==================================================
-            # 3) Constraints — دو پاس:
-            #    Pass 1: Primary Keys & Unique
-            #    Pass 2: Foreign Keys (بعد از PKها ساخته شدن)
+            # 3) فقط PK و Unique (بدون FK!)
             # ==================================================
             cur.execute("""
                 SELECT conrelid::regclass::text AS table_name,
                        conname,
-                       pg_get_constraintdef(oid),
-                       contype
+                       pg_get_constraintdef(oid)
                 FROM pg_constraint
-                WHERE contype IN ('p', 'u', 'f')
+                WHERE contype IN ('p', 'u')
                   AND connamespace = 'public'::regnamespace
-                ORDER BY
-                    contype,
-                    conrelid::regclass::text,
-                    conname;
+                ORDER BY conrelid::regclass::text, conname;
             """)
             constraints = cur.fetchall()
 
-            output.append("-- === Pass 1: Primary Keys & Unique Constraints ===")
-            for table_name, constraint_name, definition, contype in constraints:
-                if contype == 'f':
-                    continue
-                output.append(
-                    f'ALTER TABLE "{table_name}" '
-                    f'DROP CONSTRAINT IF EXISTS "{constraint_name}";'
-                )
-                output.append(
-                    f'ALTER TABLE "{table_name}" '
-                    f'ADD CONSTRAINT "{constraint_name}" {definition};'
-                )
-            output.append("")
-
-            output.append("-- === Pass 2: Foreign Keys ===")
-            for table_name, constraint_name, definition, contype in constraints:
-                if contype != 'f':
-                    continue
+            output.append("-- === Primary Keys & Unique Constraints (FK skipped) ===")
+            for table_name, constraint_name, definition in constraints:
                 output.append(
                     f'ALTER TABLE "{table_name}" '
                     f'DROP CONSTRAINT IF EXISTS "{constraint_name}";'
@@ -321,7 +298,7 @@ def export_database_sql():
                 output.append("")
 
             # ==================================================
-            # 5) Sequence values — با try/except امن
+            # 5) Sequence values
             # ==================================================
             for seq in sequences:
                 try:
