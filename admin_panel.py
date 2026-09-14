@@ -2947,6 +2947,89 @@ def handle_admin_non_text(chat_id, admin_id, message) -> bool:
     if action == "wait_gift_code_text":
         bale_api.send_message(chat_id, t("gift_code_text_only"))
         return True
+        # ─── دریافت عکس برای پیام همگانی ───
+    if action == "wait_bc_msg":
+
+        bc_type = st.get("bc_type", "all")
+
+        if message.get("photo"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "photo",
+                "file_id": message["photo"][-1]["file_id"],
+            }
+
+        elif message.get("video"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "video",
+                "file_id": message["video"]["file_id"],
+            }
+
+        elif message.get("audio"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "audio",
+                "file_id": message["audio"]["file_id"],
+            }
+
+        elif message.get("document"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "document",
+                "file_id": message["document"]["file_id"],
+            }
+
+        else:
+            return False
+
+        # ذخیره پیام برای تأیید
+        _sst(
+            admin_id,
+            {
+                **st,
+                "action": "wait_bc_msg_confirm",
+                "pending_msg": msg_data,
+            },
+        )
+
+        # نمایش خود عکس/رسانه به عنوان Preview
+        if msg_data["msg_type"] == "photo":
+            bale_api.send_photo(
+                chat_id,
+                msg_data["file_id"],
+                caption=msg_data["content"],
+            )
+
+        elif msg_data["msg_type"] == "video":
+            bale_api.send_video(
+                chat_id,
+                msg_data["file_id"],
+                caption=msg_data["content"],
+            )
+
+        elif msg_data["msg_type"] == "audio":
+            bale_api.send_audio(
+                chat_id,
+                msg_data["file_id"],
+                caption=msg_data["content"],
+            )
+
+        elif msg_data["msg_type"] == "document":
+            bale_api.send_document(
+                chat_id,
+                msg_data["file_id"],
+                caption=msg_data["content"],
+            )
+
+        # پیام تأیید
+        bale_api.send_message(
+            chat_id,
+            "آیا این پیام را برای ارسال تأیید می‌کنید؟",
+            reply_markup=_kb_confirm_abort(admin_id),
+        )
+
+        return True
     if action == "pw_wait_poster":
         photo = message.get("photo")
         if not photo:
