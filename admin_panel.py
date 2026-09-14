@@ -3192,53 +3192,47 @@ def handle_admin_text_input(chat_id, admin_id, text:str)->bool:
         bale_api.send_message(chat_id,t("json_info_password_prompt")); return True
 
     if action=="wait_json_info_password":
-
-        # فقط ادمین اصلی
+    
+        # فقط مالک اصلی اجازه ورود دارد
         if not _is_owner(admin_id):
             _cst(admin_id)
-    
             bale_api.send_message(
                 chat_id,
                 t("panel_welcome"),
                 reply_markup=_kb_main(admin_id)
             )
-    
             return True
     
-        # بررسی پسورد
+        # رمز اشتباه = هیچ بکاپی ارسال نمی‌شود
         if txt != _JSON_INFO_PASSWORD:
             bale_api.send_message(
                 chat_id,
                 t("json_info_password_wrong")
             )
-    
             return True
     
-        # پسورد صحیح است
+        # رمز درست
         _cst(admin_id)
     
         bale_api.send_message(
             chat_id,
-            "⏳ در حال تهیه بکاپ کامل PostgreSQL هستم..."
+            "⏳ در حال ساخت بکاپ کامل PostgreSQL..."
         )
     
         try:
     
-            # ساخت SQL از تمام دیتابیس
+            # ساخت بکاپ
             sql_dump = db.export_database_sql()
     
-            # مسیر فایل موقت
+            # پوشه موقت
             tmp_dir = "/tmp/arka_database_backup"
-    
-            os.makedirs(
-                tmp_dir,
-                exist_ok=True
-            )
+            os.makedirs(tmp_dir, exist_ok=True)
     
             # نام فایل
             filename = (
-                f"arka_postgresql_backup_"
-                f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.sql"
+                "arka_postgresql_backup_"
+                + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                + ".sql"
             )
     
             tmp_path = os.path.join(
@@ -3246,28 +3240,27 @@ def handle_admin_text_input(chat_id, admin_id, text:str)->bool:
                 filename
             )
     
-            # ذخیره فایل SQL
+            # ذخیره فایل
             with open(
                 tmp_path,
                 "w",
                 encoding="utf-8"
             ) as f:
-    
                 f.write(sql_dump)
     
-            # ارسال فایل برای ادمین
+            # ارسال فایل
             result = bale_api.send_document_file(
                 chat_id,
                 tmp_path,
                 caption=(
-                    "🗄️ *بکاپ کامل PostgreSQL آرکا*\n\n"
+                    "🗄️ بکاپ کامل PostgreSQL آرکا\n\n"
                     "📦 شامل تمام جدول‌ها و داده‌های دیتابیس\n"
                     "📄 فرمت: SQL\n"
-                    "🔐 این فایل فقط پس از تأیید رمز عبور ارسال شده است."
+                    "🔐 دسترسی با رمز عبور"
                 )
             )
     
-            # پاک کردن فایل موقت
+            # حذف فایل موقت
             try:
                 os.remove(tmp_path)
             except Exception:
@@ -3277,7 +3270,7 @@ def handle_admin_text_input(chat_id, admin_id, text:str)->bool:
     
                 bale_api.send_message(
                     chat_id,
-                    "✅ بکاپ کامل دیتابیس با موفقیت ساخته و ارسال شد!📦",
+                    "✅ بکاپ کامل دیتابیس با موفقیت ساخته و ارسال شد! 📦",
                     reply_markup=_kb_main(admin_id)
                 )
     
@@ -3297,10 +3290,8 @@ def handle_admin_text_input(chat_id, admin_id, text:str)->bool:
     
             bale_api.send_message(
                 chat_id,
-                (
-                    "❌ هنگام ساخت بکاپ دیتابیس خطایی رخ داد!\n\n"
-                    f"خطا: `{str(e)[:500]}`"
-                ),
+                "❌ هنگام ساخت بکاپ دیتابیس خطایی رخ داد!\n\n"
+                f"خطا: `{str(e)[:500]}`",
                 reply_markup=_kb_main(admin_id)
             )
     
