@@ -3179,32 +3179,68 @@ def is_bot_admin_in_channel(channel_username):
  
 def _channel_admin_status(channel_username):
     """
-    وضعیت ادمین بودن ربات در یک کانال را برمی‌گرداند:
-    'admin'     -> ربات هنوز ادمین کانال است
-    'not_admin' -> کانال پیدا شد ولی ربات دیگر ادمین آن نیست (ادمینی خارج شده)
-    'not_found' -> کانال اصلاً پیدا نشد (لینک/آیدی کانال عوض شده یا نامعتبر است)
+    وضعیت ادمین بودن ربات در کانال:
+
+    admin      -> قطعاً ربات ادمین است
+    not_admin  -> قطعاً کانال موجود است ولی ربات ادمین نیست
+    not_found  -> قطعاً کانال پیدا نمی‌شود
+    unknown    -> خطای شبکه/API/بله؛ نباید سفارش لغو شود
     """
     try:
         chat_res = bale_api.get_chat(channel_username)
-    except Exception:
-        chat_res = None
-    if not chat_res or not chat_res.get("ok"):
-        return "not_found"
+
+        if not chat_res:
+            return "unknown"
+
+        if not chat_res.get("ok"):
+            # خطای API را با not_found اشتباه نگیریم
+            return "unknown"
+
+    except Exception as e:
+        print(f"[channel_admin_status/get_chat] {e}")
+        return "unknown"
+
     try:
         me_res = bale_api.get_me()
-        bot_id = me_res["result"].get("id") if me_res and me_res.get("ok") else None
-        if bot_id:
-            m = bale_api.get_chat_member(channel_username, bot_id)
-            if m and m.get("ok"):
-                status = m["result"].get("status")
-                return "admin" if status in ("administrator", "creator") else "not_admin"
+
+        if not me_res or not me_res.get("ok"):
+            return "unknown"
+
+        bot_id = me_res["result"].get("id")
+
+        if not bot_id:
+            return "unknown"
+
+        m = bale_api.get_chat_member(channel_username, bot_id)
+
+        if m and m.get("ok"):
+            status = m["result"].get("status")
+
+            if status in ("administrator", "creator"):
+                return "admin"
+
+            if status in ("member", "restricted", "left", "kicked"):
+                return "not_admin"
+
+            return "unknown"
+
+        # اگر get_chat_member جواب معتبر نداد،
+        # یک بار از administrators بررسی می‌کنیم
         adm = bale_api.get_chat_administrators(channel_username)
+
         if adm and adm.get("ok"):
-            is_admin = any(a.get("user", {}).get("is_bot") for a in adm.get("result", []))
+            is_admin = any(
+                a.get("user", {}).get("is_bot")
+                for a in adm.get("result", [])
+            )
+
             return "admin" if is_admin else "not_admin"
+
+        return "unknown"
+
     except Exception as e:
-        print(f"[channel_admin_status] {e}")
-    return "not_admin"
+        print(f"[channel_admin_status/member_check] {e}")
+        return "unknown"
 
 
 def order_channel_monitor():
@@ -3265,11 +3301,27 @@ def order_channel_monitor():
                 if status == "not_found":
                     for order in info["orders"]:
                         if order.get("status") == "active":
-                            _force_cancel_order(order, orders_data, "order_cancelled_link_changed")
+                            _force_cancel_order(
+                                order,
+                                orders_data,
+                                "order_cancelled_link_changed"
+                            )
+                
                 elif status == "not_admin":
                     for order in info["orders"]:
                         if order.get("status") == "active":
-                            _force_cancel_order(order, orders_data, "order_cancelled_bot_removed")
+                            _force_cancel_order(
+                                order,
+                                orders_data,
+                                "order_cancelled_bot_removed"
+                            )
+                
+                elif status == "unknown":
+                    print(
+                        f"[order_channel_monitor] "
+                        f"Could not verify channel {info['channel_id']}; "
+                        f"order was NOT cancelled."
+                    )
         except Exception as e:
             print(f"[order_channel_monitor] {e}")
         time.sleep(CHECK_INTERVAL)
