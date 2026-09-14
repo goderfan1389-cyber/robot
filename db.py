@@ -144,21 +144,24 @@ def doc_has_data(name):
     return True
 
 def export_database_sql():
-    """ساخت بکاپ SQL امن از PostgreSQL - بدون تراکنش یکپارچه"""
+    """ساخت بکاپ SQL امن از PostgreSQL — بدون تراکنش یکپارچه، با ترتیب صحیح constraintها."""
+
     from psycopg2 import sql
     from psycopg2.extras import Json
 
     def _run(conn):
         output = []
+
         output.append("-- ARKA PostgreSQL FULL BACKUP")
         output.append("-- Generated automatically by ARKA Bot")
-        output.append("")
         output.append("-- Each statement is independent (no wrapping BEGIN/COMMIT)")
         output.append("")
 
         with conn.cursor() as cur:
 
+            # ==================================================
             # 1) Sequences
+            # ==================================================
             cur.execute("""
                 SELECT sequence_name
                 FROM information_schema.sequences
@@ -171,7 +174,9 @@ def export_database_sql():
                 output.append(f'CREATE SEQUENCE IF NOT EXISTS "{seq}";')
             output.append("")
 
+            # ==================================================
             # 2) Tables
+            # ==================================================
             cur.execute("""
                 SELECT c.oid, c.relname
                 FROM pg_class c
@@ -210,20 +215,30 @@ def export_database_sql():
                 output.append(");")
                 output.append("")
 
-            # 3) Constraints (DROP IF EXISTS first)
+            # ==================================================
+            # 3) Constraints — دو پاس:
+            #    Pass 1: Primary Keys & Unique
+            #    Pass 2: Foreign Keys (بعد از PKها ساخته شدن)
+            # ==================================================
             cur.execute("""
                 SELECT conrelid::regclass::text AS table_name,
                        conname,
-                       pg_get_constraintdef(oid)
+                       pg_get_constraintdef(oid),
+                       contype
                 FROM pg_constraint
                 WHERE contype IN ('p', 'u', 'f')
                   AND connamespace = 'public'::regnamespace
-                ORDER BY conrelid::regclass::text, conname;
+                ORDER BY
+                    contype,
+                    conrelid::regclass::text,
+                    conname;
             """)
             constraints = cur.fetchall()
 
-            for table_name, constraint_name, definition in constraints:
-                # حذف constraint موجود (اگه باشه)
+            output.append("-- === Pass 1: Primary Keys & Unique Constraints ===")
+            for table_name, constraint_name, definition, contype in constraints:
+                if contype == 'f':
+                    continue
                 output.append(
                     f'ALTER TABLE "{table_name}" '
                     f'DROP CONSTRAINT IF EXISTS "{constraint_name}";'
@@ -234,7 +249,23 @@ def export_database_sql():
                 )
             output.append("")
 
-            # 4) Data — با ON CONFLICT برای جلوگیری از خطای duplicate
+            output.append("-- === Pass 2: Foreign Keys ===")
+            for table_name, constraint_name, definition, contype in constraints:
+                if contype != 'f':
+                    continue
+                output.append(
+                    f'ALTER TABLE "{table_name}" '
+                    f'DROP CONSTRAINT IF EXISTS "{constraint_name}";'
+                )
+                output.append(
+                    f'ALTER TABLE "{table_name}" '
+                    f'ADD CONSTRAINT "{constraint_name}" {definition};'
+                )
+            output.append("")
+
+            # ==================================================
+            # 4) Data — با ON CONFLICT DO NOTHING
+            # ==================================================
             for table_oid, table_name in tables:
                 cur.execute(
                     sql.SQL('SELECT * FROM {}').format(
@@ -246,11 +277,14 @@ def export_database_sql():
                     continue
 
                 column_names = [desc.name for desc in cur.description]
+
                 cur.execute("""
                     SELECT a.attname,
                            pg_catalog.format_type(a.atttypid, a.atttypmod)
                     FROM pg_attribute a
-                    WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
+                    WHERE a.attrelid = %s
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
                     ORDER BY a.attnum;
                 """, (table_oid,))
                 column_types = {n: t for n, t in cur.fetchall()}
@@ -266,7 +300,11 @@ def export_database_sql():
                                 values.append("NULL")
                             else:
                                 json_value = json.dumps(value, ensure_ascii=False)
-                                escaped = json_value.replace("\\", "\\\\").replace("'", "''")
+                                escaped = (
+                                    json_value
+                                    .replace("\\", "\\\\")
+                                    .replace("'", "''")
+                                )
                                 cast = "::jsonb" if column_type == "jsonb" else "::json"
                                 values.append(f"E'{escaped}'{cast}")
                         else:
@@ -282,7 +320,9 @@ def export_database_sql():
                     )
                 output.append("")
 
-            # 5) Sequence values (با EXISTS check)
+            # ==================================================
+            # 5) Sequence values — با try/except امن
+            # ==================================================
             for seq in sequences:
                 try:
                     cur.execute(
