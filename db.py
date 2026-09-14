@@ -142,3 +142,245 @@ def doc_has_data(name):
     if data is None or data == {} or data == []:
         return False
     return True
+
+def export_database_sql():
+    """
+    گرفتن بکاپ SQL از تمام جدول‌های PostgreSQL
+    شامل ساخت جدول‌ها، داده‌ها، کلیدهای اصلی، uniqueها،
+    foreign keyها و sequenceها.
+    """
+
+    def _run(conn):
+        from psycopg2 import sql
+
+        output = []
+
+        output.append("-- ARKA PostgreSQL FULL BACKUP")
+        output.append("-- Generated automatically by ARKA Bot")
+        output.append("")
+        output.append("BEGIN;")
+        output.append("")
+
+        with conn.cursor() as cur:
+
+            # =========================================================
+            # 1) پیدا کردن تمام جدول‌های واقعی schema public
+            # =========================================================
+            cur.execute("""
+                SELECT
+                    c.oid,
+                    c.relname
+                FROM pg_class c
+                JOIN pg_namespace n
+                    ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind = 'r'
+                ORDER BY c.relname;
+            """)
+
+            tables = cur.fetchall()
+
+            # =========================================================
+            # 2) ساخت جدول‌ها
+            # =========================================================
+            for table_oid, table_name in tables:
+
+                cur.execute("""
+                    SELECT
+                        a.attname,
+                        pg_catalog.format_type(
+                            a.atttypid,
+                            a.atttypmod
+                        ) AS data_type,
+                        a.attnotnull,
+                        pg_get_expr(ad.adbin, ad.adrelid)
+                    FROM pg_attribute a
+                    LEFT JOIN pg_attrdef ad
+                        ON a.attrelid = ad.adrelid
+                       AND a.attnum = ad.adnum
+                    WHERE a.attrelid = %s
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    ORDER BY a.attnum;
+                """, (table_oid,))
+
+                columns = cur.fetchall()
+
+                output.append(
+                    f'CREATE TABLE IF NOT EXISTS "{table_name}" ('
+                )
+
+                column_lines = []
+
+                for col_name, data_type, not_null, default_value in columns:
+
+                    line = (
+                        f'    "{col_name}" {data_type}'
+                    )
+
+                    if default_value:
+                        line += f" DEFAULT {default_value}"
+
+                    if not_null:
+                        line += " NOT NULL"
+
+                    column_lines.append(line)
+
+                output.append(",\n".join(column_lines))
+                output.append(");")
+                output.append("")
+
+            # =========================================================
+            # 3) وارد کردن داده‌های تمام جدول‌ها
+            # =========================================================
+            for table_oid, table_name in tables:
+
+                cur.execute(
+                    sql.SQL('SELECT * FROM {}').format(
+                        sql.Identifier(table_name)
+                    )
+                )
+
+                rows = cur.fetchall()
+
+                if not rows:
+                    continue
+
+                column_names = [
+                    desc.name
+                    for desc in cur.description
+                ]
+
+                for row in rows:
+
+                    values = []
+
+                    for value in row:
+
+                        if value is None:
+                            values.append("NULL")
+
+                        elif isinstance(value, bool):
+                            values.append(
+                                "TRUE" if value else "FALSE"
+                            )
+
+                        elif isinstance(value, (int, float)):
+                            values.append(str(value))
+
+                        elif isinstance(value, (dict, list)):
+                            import json
+
+                            text = json.dumps(
+                                value,
+                                ensure_ascii=False
+                            )
+
+                            escaped = (
+                                text
+                                .replace("\\", "\\\\")
+                                .replace("'", "''")
+                            )
+
+                            values.append(
+                                f"E'{escaped}'"
+                            )
+
+                        else:
+                            text = str(value)
+
+                            escaped = (
+                                text
+                                .replace("\\", "\\\\")
+                                .replace("'", "''")
+                            )
+
+                            values.append(
+                                f"E'{escaped}'"
+                            )
+
+                    columns_sql = ", ".join(
+                        f'"{c}"'
+                        for c in column_names
+                    )
+
+                    values_sql = ", ".join(values)
+
+                    output.append(
+                        f'INSERT INTO "{table_name}" '
+                        f'({columns_sql}) '
+                        f'VALUES ({values_sql});'
+                    )
+
+                output.append("")
+
+            # =========================================================
+            # 4) Primary Key / Unique / Foreign Key
+            # =========================================================
+            cur.execute("""
+                SELECT
+                    conrelid::regclass::text AS table_name,
+                    conname,
+                    pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE contype IN ('p', 'u', 'f')
+                  AND connamespace = 'public'::regnamespace
+                ORDER BY conrelid::regclass::text, conname;
+            """)
+
+            constraints = cur.fetchall()
+
+            for table_name, constraint_name, definition in constraints:
+
+                output.append(
+                    f'ALTER TABLE "{table_name}" '
+                    f'ADD CONSTRAINT "{constraint_name}" '
+                    f'{definition};'
+                )
+
+            output.append("")
+
+            # =========================================================
+            # 5) Sequenceها
+            # =========================================================
+            cur.execute("""
+                SELECT
+                    sequence_name
+                FROM information_schema.sequences
+                WHERE sequence_schema = 'public'
+                ORDER BY sequence_name;
+            """)
+
+            sequences = cur.fetchall()
+
+            for (sequence_name,) in sequences:
+
+                cur.execute(
+                    sql.SQL(
+                        'SELECT last_value, is_called '
+                        'FROM {}'
+                    ).format(
+                        sql.Identifier(sequence_name)
+                    )
+                )
+
+                seq = cur.fetchone()
+
+                if seq:
+                    last_value, is_called = seq
+
+                    output.append(
+                        f"SELECT setval("
+                        f"'{sequence_name}', "
+                        f"{last_value}, "
+                        f"{str(is_called).upper()}"
+                        f");"
+                    )
+
+            output.append("")
+            output.append("COMMIT;")
+            output.append("")
+
+        return "\n".join(output)
+
+    return _with_conn(_run)
