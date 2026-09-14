@@ -3192,32 +3192,118 @@ def handle_admin_text_input(chat_id, admin_id, text:str)->bool:
         bale_api.send_message(chat_id,t("json_info_password_prompt")); return True
 
     if action=="wait_json_info_password":
+
+        # فقط ادمین اصلی
         if not _is_owner(admin_id):
-            _cst(admin_id); bale_api.send_message(chat_id,t("panel_welcome"),reply_markup=_kb_main(admin_id)); return True
+            _cst(admin_id)
+    
+            bale_api.send_message(
+                chat_id,
+                t("panel_welcome"),
+                reply_markup=_kb_main(admin_id)
+            )
+    
+            return True
+    
+        # بررسی پسورد
         if txt != _JSON_INFO_PASSWORD:
-            bale_api.send_message(chat_id,t("json_info_password_wrong")); return True
+            bale_api.send_message(
+                chat_id,
+                t("json_info_password_wrong")
+            )
+    
+            return True
+    
+        # پسورد صحیح است
         _cst(admin_id)
-        bale_api.send_message(chat_id,t("json_info_sending"))
-        docs = _all_json_files()
-        sent = 0
-        tmp_dir = "/tmp/arka_json_info"
-        os.makedirs(tmp_dir, exist_ok=True)
-        for doc_name in docs:
-            if _json_file_has_data(doc_name):
-                try:
-                    data = db.load_json(doc_name, None)
-                    tmp_path = os.path.join(tmp_dir, doc_name)
-                    with open(tmp_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    if bale_api.send_document_file(chat_id, tmp_path, caption=f"📄 `{doc_name}`"):
-                        sent += 1
-                    os.remove(tmp_path)
-                except Exception as e:
-                    print(f"[json_info] {doc_name}: {e}")
-        if sent == 0:
-            bale_api.send_message(chat_id,t("json_info_empty"),reply_markup=_kb_main(admin_id))
-        else:
-            bale_api.send_message(chat_id,t("json_info_done").format(count=sent),reply_markup=_kb_main(admin_id))
+    
+        bale_api.send_message(
+            chat_id,
+            "⏳ در حال تهیه بکاپ کامل PostgreSQL هستم..."
+        )
+    
+        try:
+    
+            # ساخت SQL از تمام دیتابیس
+            sql_dump = db.export_database_sql()
+    
+            # مسیر فایل موقت
+            tmp_dir = "/tmp/arka_database_backup"
+    
+            os.makedirs(
+                tmp_dir,
+                exist_ok=True
+            )
+    
+            # نام فایل
+            filename = (
+                f"arka_postgresql_backup_"
+                f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.sql"
+            )
+    
+            tmp_path = os.path.join(
+                tmp_dir,
+                filename
+            )
+    
+            # ذخیره فایل SQL
+            with open(
+                tmp_path,
+                "w",
+                encoding="utf-8"
+            ) as f:
+    
+                f.write(sql_dump)
+    
+            # ارسال فایل برای ادمین
+            result = bale_api.send_document_file(
+                chat_id,
+                tmp_path,
+                caption=(
+                    "🗄️ *بکاپ کامل PostgreSQL آرکا*\n\n"
+                    "📦 شامل تمام جدول‌ها و داده‌های دیتابیس\n"
+                    "📄 فرمت: SQL\n"
+                    "🔐 این فایل فقط پس از تأیید رمز عبور ارسال شده است."
+                )
+            )
+    
+            # پاک کردن فایل موقت
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+    
+            if result:
+    
+                bale_api.send_message(
+                    chat_id,
+                    "✅ بکاپ کامل دیتابیس با موفقیت ساخته و ارسال شد!📦",
+                    reply_markup=_kb_main(admin_id)
+                )
+    
+            else:
+    
+                bale_api.send_message(
+                    chat_id,
+                    "❌ ارسال فایل بکاپ ناموفق بود!",
+                    reply_markup=_kb_main(admin_id)
+                )
+    
+        except Exception as e:
+    
+            print(
+                f"[database_backup] ERROR: {e}"
+            )
+    
+            bale_api.send_message(
+                chat_id,
+                (
+                    "❌ هنگام ساخت بکاپ دیتابیس خطایی رخ داد!\n\n"
+                    f"خطا: `{str(e)[:500]}`"
+                ),
+                reply_markup=_kb_main(admin_id)
+            )
+    
         return True
 
     # ─── ⚙️ تنظیمات ───
