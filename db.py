@@ -144,288 +144,163 @@ def doc_has_data(name):
     return True
 
 def export_database_sql():
-    """ساخت بکاپ SQL از تمام جدول‌ها، داده‌ها و Sequenceهای PostgreSQL."""
-
+    """ساخت بکاپ SQL امن از PostgreSQL - بدون تراکنش یکپارچه"""
     from psycopg2 import sql
     from psycopg2.extras import Json
 
     def _run(conn):
         output = []
-
         output.append("-- ARKA PostgreSQL FULL BACKUP")
         output.append("-- Generated automatically by ARKA Bot")
         output.append("")
-        output.append("BEGIN;")
+        output.append("-- Each statement is independent (no wrapping BEGIN/COMMIT)")
         output.append("")
 
         with conn.cursor() as cur:
 
-            # ==================================================
-            # 1) پیدا کردن Sequenceها
-            # ==================================================
+            # 1) Sequences
             cur.execute("""
                 SELECT sequence_name
                 FROM information_schema.sequences
                 WHERE sequence_schema = 'public'
                 ORDER BY sequence_name;
             """)
-
             sequences = [r[0] for r in cur.fetchall()]
 
-            # Sequence باید قبل از CREATE TABLE ساخته شود
-            for sequence_name in sequences:
-                output.append(
-                    f'CREATE SEQUENCE IF NOT EXISTS '
-                    f'"{sequence_name}";'
-                )
-
+            for seq in sequences:
+                output.append(f'CREATE SEQUENCE IF NOT EXISTS "{seq}";')
             output.append("")
 
-            # ==================================================
-            # 2) پیدا کردن جدول‌ها
-            # ==================================================
+            # 2) Tables
             cur.execute("""
-                SELECT
-                    c.oid,
-                    c.relname
+                SELECT c.oid, c.relname
                 FROM pg_class c
-                JOIN pg_namespace n
-                    ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public'
-                  AND c.relkind = 'r'
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relkind = 'r'
                 ORDER BY c.relname;
             """)
-
             tables = cur.fetchall()
 
-            # ==================================================
-            # 3) ساخت جدول‌ها
-            # ==================================================
             for table_oid, table_name in tables:
-
                 cur.execute("""
-                    SELECT
-                        a.attname,
-                        pg_catalog.format_type(
-                            a.atttypid,
-                            a.atttypmod
-                        ),
-                        a.attnotnull,
-                        pg_get_expr(ad.adbin, ad.adrelid)
+                    SELECT a.attname,
+                           pg_catalog.format_type(a.atttypid, a.atttypmod),
+                           a.attnotnull,
+                           pg_get_expr(ad.adbin, ad.adrelid)
                     FROM pg_attribute a
                     LEFT JOIN pg_attrdef ad
-                        ON a.attrelid = ad.adrelid
-                       AND a.attnum = ad.adnum
+                        ON a.attrelid = ad.adrelid AND a.attnum = ad.adnum
                     WHERE a.attrelid = %s
                       AND a.attnum > 0
                       AND NOT a.attisdropped
                     ORDER BY a.attnum;
                 """, (table_oid,))
-
                 columns = cur.fetchall()
 
-                output.append(
-                    f'CREATE TABLE IF NOT EXISTS "{table_name}" ('
-                )
-
+                output.append(f'CREATE TABLE IF NOT EXISTS "{table_name}" (')
                 column_lines = []
-
-                for (
-                    col_name,
-                    data_type,
-                    not_null,
-                    default_value
-                ) in columns:
-
+                for col_name, data_type, not_null, default_value in columns:
                     line = f'    "{col_name}" {data_type}'
-
                     if default_value:
                         line += f' DEFAULT {default_value}'
-
                     if not_null:
                         line += ' NOT NULL'
-
                     column_lines.append(line)
-
                 output.append(",\n".join(column_lines))
                 output.append(");")
                 output.append("")
 
-            # ==================================================
-            # 4) وارد کردن تمام داده‌ها
-            # ==================================================
+            # 3) Constraints (DROP IF EXISTS first)
+            cur.execute("""
+                SELECT conrelid::regclass::text AS table_name,
+                       conname,
+                       pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE contype IN ('p', 'u', 'f')
+                  AND connamespace = 'public'::regnamespace
+                ORDER BY conrelid::regclass::text, conname;
+            """)
+            constraints = cur.fetchall()
+
+            for table_name, constraint_name, definition in constraints:
+                # حذف constraint موجود (اگه باشه)
+                output.append(
+                    f'ALTER TABLE "{table_name}" '
+                    f'DROP CONSTRAINT IF EXISTS "{constraint_name}";'
+                )
+                output.append(
+                    f'ALTER TABLE "{table_name}" '
+                    f'ADD CONSTRAINT "{constraint_name}" {definition};'
+                )
+            output.append("")
+
+            # 4) Data — با ON CONFLICT برای جلوگیری از خطای duplicate
             for table_oid, table_name in tables:
-            
                 cur.execute(
                     sql.SQL('SELECT * FROM {}').format(
                         sql.Identifier(table_name)
                     )
                 )
-            
                 rows = cur.fetchall()
-            
                 if not rows:
                     continue
-            
-                column_names = [
-                    desc.name
-                    for desc in cur.description
-                ]
-            
-                # نوع واقعی ستون‌ها را از PostgreSQL می‌گیریم
+
+                column_names = [desc.name for desc in cur.description]
                 cur.execute("""
-                    SELECT
-                        a.attname,
-                        pg_catalog.format_type(
-                            a.atttypid,
-                            a.atttypmod
-                        )
+                    SELECT a.attname,
+                           pg_catalog.format_type(a.atttypid, a.atttypmod)
                     FROM pg_attribute a
-                    WHERE a.attrelid = %s
-                      AND a.attnum > 0
-                      AND NOT a.attisdropped
+                    WHERE a.attrelid = %s AND a.attnum > 0 AND NOT a.attisdropped
                     ORDER BY a.attnum;
                 """, (table_oid,))
-            
-                column_types = {
-                    name: data_type
-                    for name, data_type in cur.fetchall()
-                }
-            
-                columns_sql = ", ".join(
-                    f'"{name}"'
-                    for name in column_names
-                )
-            
+                column_types = {n: t for n, t in cur.fetchall()}
+
+                columns_sql = ", ".join(f'"{n}"' for n in column_names)
+
                 for row in rows:
-            
                     values = []
-            
-                    for column_name, value in zip(
-                        column_names,
-                        row
-                    ):
-            
-                        column_type = column_types.get(
-                            column_name,
-                            ""
-                        ).lower()
-            
-                        # ------------------------------------------
-                        # JSON / JSONB
-                        # ------------------------------------------
+                    for column_name, value in zip(column_names, row):
+                        column_type = column_types.get(column_name, "").lower()
                         if column_type in ("json", "jsonb"):
-            
                             if value is None:
                                 values.append("NULL")
                             else:
-                                json_value = json.dumps(
-                                    value,
-                                    ensure_ascii=False
-                                )
-            
-                                escaped = (
-                                    json_value
-                                    .replace("\\", "\\\\")
-                                    .replace("'", "''")
-                                )
-            
-                                if column_type == "jsonb":
-                                    values.append(
-                                        f"E'{escaped}'::jsonb"
-                                    )
-                                else:
-                                    values.append(
-                                        f"E'{escaped}'::json"
-                                    )
-            
-                        # ------------------------------------------
-                        # سایر انواع داده
-                        # ------------------------------------------
+                                json_value = json.dumps(value, ensure_ascii=False)
+                                escaped = json_value.replace("\\", "\\\\").replace("'", "''")
+                                cast = "::jsonb" if column_type == "jsonb" else "::json"
+                                values.append(f"E'{escaped}'{cast}")
                         else:
-            
                             values.append(
-                                cur.mogrify(
-                                    "%s",
-                                    (value,)
-                                ).decode("utf-8")
+                                cur.mogrify("%s", (value,)).decode("utf-8")
                             )
-            
+
                     values_sql = ", ".join(values)
-            
                     output.append(
-                        f'INSERT INTO "{table_name}" '
-                        f'({columns_sql}) '
-                        f'VALUES ({values_sql});'
+                        f'INSERT INTO "{table_name}" ({columns_sql}) '
+                        f'VALUES ({values_sql}) '
+                        f'ON CONFLICT DO NOTHING;'
                     )
-            
                 output.append("")
 
-            # ==================================================
-            # 5) Primary Key / Unique / Foreign Key
-            # ==================================================
-            cur.execute("""
-                SELECT
-                    conrelid::regclass::text AS table_name,
-                    conname,
-                    pg_get_constraintdef(oid)
-                FROM pg_constraint
-                WHERE contype IN ('p', 'u', 'f')
-                  AND connamespace =
-                      'public'::regnamespace
-                ORDER BY
-                    conrelid::regclass::text,
-                    conname;
-            """)
-
-            constraints = cur.fetchall()
-
-            for table_name, constraint_name, definition in constraints:
-
-                output.append(
-                    f'ALTER TABLE "{table_name}" '
-                    f'ADD CONSTRAINT "{constraint_name}" '
-                    f'{definition};'
-                )
-
-            output.append("")
-
-            # ==================================================
-            # 6) تنظیم مقدار Sequenceها
-            # ==================================================
-            for sequence_name in sequences:
-
+            # 5) Sequence values (با EXISTS check)
+            for seq in sequences:
                 try:
                     cur.execute(
-                        sql.SQL(
-                            'SELECT last_value, is_called '
-                            'FROM {}'
-                        ).format(
-                            sql.Identifier(sequence_name)
+                        sql.SQL('SELECT last_value, is_called FROM {}').format(
+                            sql.Identifier(seq)
                         )
                     )
-
-                    seq = cur.fetchone()
-
-                    if seq:
-                        last_value, is_called = seq
-
+                    seq_row = cur.fetchone()
+                    if seq_row:
+                        last_value, is_called = seq_row
                         output.append(
-                            f"SELECT setval("
-                            f"'public.{sequence_name}', "
-                            f"{last_value}, "
-                            f"{str(is_called).upper()}"
-                            f");"
+                            f"SELECT setval('public.{seq}', {last_value}, "
+                            f"{str(is_called).upper()});"
                         )
-
                 except Exception:
                     pass
-
-            output.append("")
-            output.append("COMMIT;")
             output.append("")
 
         return "\n".join(output)
 
-    return _with_conn(_run)
     return _with_conn(_run)
