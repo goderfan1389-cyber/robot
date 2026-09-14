@@ -2867,6 +2867,83 @@ def handle_admin_non_text(chat_id, admin_id, message) -> bool:
     if not _is_any_admin(admin_id): return False
     st = _gst(admin_id); action = st.get("action","")
     t = _t(admin_id)
+    # ─── Broadcast: دریافت عکس/ویدئو/فایل/صوت ───
+    if action == "wait_bc_msg":
+        bc_type = st.get("bc_type", "all")
+
+        if message.get("photo"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "photo",
+                "file_id": message["photo"][-1]["file_id"],
+            }
+
+        elif message.get("video"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "video",
+                "file_id": message["video"]["file_id"],
+            }
+
+        elif message.get("audio"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "audio",
+                "file_id": message["audio"]["file_id"],
+            }
+
+        elif message.get("document"):
+            msg_data = {
+                "content": message.get("caption", ""),
+                "msg_type": "document",
+                "file_id": message["document"]["file_id"],
+            }
+
+        else:
+            return False
+
+        if bc_type == "scheduled":
+            _sst(
+                admin_id,
+                {
+                    **st,
+                    "action": "wait_bc_scheduled_time",
+                    "pending_msg": msg_data,
+                },
+            )
+
+            bale_api.send_message(
+                chat_id,
+                t("bc_scheduled_time"),
+                reply_markup=_kb_back(admin_id),
+            )
+
+        else:
+            _sst(
+                admin_id,
+                {
+                    **st,
+                    "action": "wait_bc_msg_confirm",
+                    "pending_msg": msg_data,
+                },
+            )
+
+            preview_text = msg_data.get("content", "")
+
+            bale_api.send_message(
+                chat_id,
+                t(
+                    {
+                        "all": "bc_all_preview",
+                        "vip": "bc_vip_preview",
+                        "normal": "bc_normal_preview",
+                        "inactive": "bc_inactive_preview",
+                    }.get(bc_type, "bc_all_preview")
+                ).format(msg=preview_text or "📷 تصویر"),
+                reply_markup=_kb_confirm_abort(admin_id),
+            )
+
+        return True
     if action == "wait_gift_code_text":
         bale_api.send_message(chat_id, t("gift_code_text_only"))
         return True
