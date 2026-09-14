@@ -144,15 +144,12 @@ def doc_has_data(name):
     return True
 
 def export_database_sql():
-    """
-    گرفتن بکاپ SQL از تمام جدول‌های PostgreSQL
-    شامل ساخت جدول‌ها، داده‌ها، کلیدهای اصلی، uniqueها،
-    foreign keyها و sequenceها.
-    """
+    """ساخت بکاپ SQL از تمام جدول‌ها، داده‌ها و Sequenceهای PostgreSQL."""
+
+    from psycopg2 import sql
+    from psycopg2.extras import Json
 
     def _run(conn):
-        from psycopg2 import sql
-
         output = []
 
         output.append("-- ARKA PostgreSQL FULL BACKUP")
@@ -163,9 +160,30 @@ def export_database_sql():
 
         with conn.cursor() as cur:
 
-            # =========================================================
-            # 1) پیدا کردن تمام جدول‌های واقعی schema public
-            # =========================================================
+            # ==================================================
+            # 1) پیدا کردن Sequenceها
+            # ==================================================
+            cur.execute("""
+                SELECT sequence_name
+                FROM information_schema.sequences
+                WHERE sequence_schema = 'public'
+                ORDER BY sequence_name;
+            """)
+
+            sequences = [r[0] for r in cur.fetchall()]
+
+            # Sequence باید قبل از CREATE TABLE ساخته شود
+            for sequence_name in sequences:
+                output.append(
+                    f'CREATE SEQUENCE IF NOT EXISTS '
+                    f'"{sequence_name}";'
+                )
+
+            output.append("")
+
+            # ==================================================
+            # 2) پیدا کردن جدول‌ها
+            # ==================================================
             cur.execute("""
                 SELECT
                     c.oid,
@@ -180,9 +198,9 @@ def export_database_sql():
 
             tables = cur.fetchall()
 
-            # =========================================================
-            # 2) ساخت جدول‌ها
-            # =========================================================
+            # ==================================================
+            # 3) ساخت جدول‌ها
+            # ==================================================
             for table_oid, table_name in tables:
 
                 cur.execute("""
@@ -191,7 +209,7 @@ def export_database_sql():
                         pg_catalog.format_type(
                             a.atttypid,
                             a.atttypmod
-                        ) AS data_type,
+                        ),
                         a.attnotnull,
                         pg_get_expr(ad.adbin, ad.adrelid)
                     FROM pg_attribute a
@@ -212,17 +230,20 @@ def export_database_sql():
 
                 column_lines = []
 
-                for col_name, data_type, not_null, default_value in columns:
+                for (
+                    col_name,
+                    data_type,
+                    not_null,
+                    default_value
+                ) in columns:
 
-                    line = (
-                        f'    "{col_name}" {data_type}'
-                    )
+                    line = f'    "{col_name}" {data_type}'
 
                     if default_value:
-                        line += f" DEFAULT {default_value}"
+                        line += f' DEFAULT {default_value}'
 
                     if not_null:
-                        line += " NOT NULL"
+                        line += ' NOT NULL'
 
                     column_lines.append(line)
 
@@ -230,9 +251,9 @@ def export_database_sql():
                 output.append(");")
                 output.append("")
 
-            # =========================================================
-            # 3) وارد کردن داده‌های تمام جدول‌ها
-            # =========================================================
+            # ==================================================
+            # 4) وارد کردن تمام داده‌ها
+            # ==================================================
             for table_oid, table_name in tables:
 
                 cur.execute(
@@ -251,58 +272,33 @@ def export_database_sql():
                     for desc in cur.description
                 ]
 
+                columns_sql = ", ".join(
+                    f'"{name}"'
+                    for name in column_names
+                )
+
                 for row in rows:
 
                     values = []
 
                     for value in row:
 
-                        if value is None:
-                            values.append("NULL")
-
-                        elif isinstance(value, bool):
-                            values.append(
-                                "TRUE" if value else "FALSE"
-                            )
-
-                        elif isinstance(value, (int, float)):
-                            values.append(str(value))
-
-                        elif isinstance(value, (dict, list)):
-                            import json
-
-                            text = json.dumps(
+                        # JSON / JSONB
+                        if isinstance(value, (dict, list)):
+                            value = Json(
                                 value,
-                                ensure_ascii=False
+                                dumps=lambda x: json.dumps(
+                                    x,
+                                    ensure_ascii=False
+                                )
                             )
 
-                            escaped = (
-                                text
-                                .replace("\\", "\\\\")
-                                .replace("'", "''")
-                            )
-
-                            values.append(
-                                f"E'{escaped}'"
-                            )
-
-                        else:
-                            text = str(value)
-
-                            escaped = (
-                                text
-                                .replace("\\", "\\\\")
-                                .replace("'", "''")
-                            )
-
-                            values.append(
-                                f"E'{escaped}'"
-                            )
-
-                    columns_sql = ", ".join(
-                        f'"{c}"'
-                        for c in column_names
-                    )
+                        values.append(
+                            cur.mogrify(
+                                "%s",
+                                (value,)
+                            ).decode("utf-8")
+                        )
 
                     values_sql = ", ".join(values)
 
@@ -314,9 +310,9 @@ def export_database_sql():
 
                 output.append("")
 
-            # =========================================================
-            # 4) Primary Key / Unique / Foreign Key
-            # =========================================================
+            # ==================================================
+            # 5) Primary Key / Unique / Foreign Key
+            # ==================================================
             cur.execute("""
                 SELECT
                     conrelid::regclass::text AS table_name,
@@ -324,8 +320,11 @@ def export_database_sql():
                     pg_get_constraintdef(oid)
                 FROM pg_constraint
                 WHERE contype IN ('p', 'u', 'f')
-                  AND connamespace = 'public'::regnamespace
-                ORDER BY conrelid::regclass::text, conname;
+                  AND connamespace =
+                      'public'::regnamespace
+                ORDER BY
+                    conrelid::regclass::text,
+                    conname;
             """)
 
             constraints = cur.fetchall()
@@ -340,42 +339,36 @@ def export_database_sql():
 
             output.append("")
 
-            # =========================================================
-            # 5) Sequenceها
-            # =========================================================
-            cur.execute("""
-                SELECT
-                    sequence_name
-                FROM information_schema.sequences
-                WHERE sequence_schema = 'public'
-                ORDER BY sequence_name;
-            """)
+            # ==================================================
+            # 6) تنظیم مقدار Sequenceها
+            # ==================================================
+            for sequence_name in sequences:
 
-            sequences = cur.fetchall()
-
-            for (sequence_name,) in sequences:
-
-                cur.execute(
-                    sql.SQL(
-                        'SELECT last_value, is_called '
-                        'FROM {}'
-                    ).format(
-                        sql.Identifier(sequence_name)
+                try:
+                    cur.execute(
+                        sql.SQL(
+                            'SELECT last_value, is_called '
+                            'FROM {}'
+                        ).format(
+                            sql.Identifier(sequence_name)
+                        )
                     )
-                )
 
-                seq = cur.fetchone()
+                    seq = cur.fetchone()
 
-                if seq:
-                    last_value, is_called = seq
+                    if seq:
+                        last_value, is_called = seq
 
-                    output.append(
-                        f"SELECT setval("
-                        f"'{sequence_name}', "
-                        f"{last_value}, "
-                        f"{str(is_called).upper()}"
-                        f");"
-                    )
+                        output.append(
+                            f"SELECT setval("
+                            f"'public.{sequence_name}', "
+                            f"{last_value}, "
+                            f"{str(is_called).upper()}"
+                            f");"
+                        )
+
+                except Exception:
+                    pass
 
             output.append("")
             output.append("COMMIT;")
@@ -383,4 +376,5 @@ def export_database_sql():
 
         return "\n".join(output)
 
+    return _with_conn(_run)
     return _with_conn(_run)
