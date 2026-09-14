@@ -2930,17 +2930,40 @@ def handle_admin_non_text(chat_id, admin_id, message) -> bool:
 
             preview_text = msg_data.get("content", "")
 
+            # نمایش Preview واقعی عکس + کپشن
+            if msg_data["msg_type"] == "photo":
+                bale_api.send_photo(
+                    chat_id,
+                    msg_data["file_id"],
+                    caption=msg_data["content"]
+                )
+            
+            elif msg_data["msg_type"] == "video":
+                bale_api.send_video(
+                    chat_id,
+                    msg_data["file_id"],
+                    caption=msg_data["content"]
+                )
+            
+            elif msg_data["msg_type"] == "audio":
+                bale_api.send_audio(
+                    chat_id,
+                    msg_data["file_id"],
+                    caption=msg_data["content"]
+                )
+            
+            elif msg_data["msg_type"] == "document":
+                bale_api.send_document(
+                    chat_id,
+                    msg_data["file_id"],
+                    caption=msg_data["content"]
+                )
+            
+            # دکمه‌های تأیید و لغو را جداگانه بفرست
             bale_api.send_message(
                 chat_id,
-                t(
-                    {
-                        "all": "bc_all_preview",
-                        "vip": "bc_vip_preview",
-                        "normal": "bc_normal_preview",
-                        "inactive": "bc_inactive_preview",
-                    }.get(bc_type, "bc_all_preview")
-                ).format(msg=preview_text or "📷 تصویر"),
-                reply_markup=_kb_confirm_abort(admin_id),
+                "آیا همین پیام را برای ارسال تأیید می‌کنید؟",
+                reply_markup=_kb_confirm_abort(admin_id)
             )
 
         return True
