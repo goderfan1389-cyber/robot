@@ -255,59 +255,110 @@ def export_database_sql():
             # 4) وارد کردن تمام داده‌ها
             # ==================================================
             for table_oid, table_name in tables:
-
+            
                 cur.execute(
                     sql.SQL('SELECT * FROM {}').format(
                         sql.Identifier(table_name)
                     )
                 )
-
+            
                 rows = cur.fetchall()
-
+            
                 if not rows:
                     continue
-
+            
                 column_names = [
                     desc.name
                     for desc in cur.description
                 ]
-
+            
+                # نوع واقعی ستون‌ها را از PostgreSQL می‌گیریم
+                cur.execute("""
+                    SELECT
+                        a.attname,
+                        pg_catalog.format_type(
+                            a.atttypid,
+                            a.atttypmod
+                        )
+                    FROM pg_attribute a
+                    WHERE a.attrelid = %s
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    ORDER BY a.attnum;
+                """, (table_oid,))
+            
+                column_types = {
+                    name: data_type
+                    for name, data_type in cur.fetchall()
+                }
+            
                 columns_sql = ", ".join(
                     f'"{name}"'
                     for name in column_names
                 )
-
+            
                 for row in rows:
-
+            
                     values = []
-
-                    for value in row:
-
+            
+                    for column_name, value in zip(
+                        column_names,
+                        row
+                    ):
+            
+                        column_type = column_types.get(
+                            column_name,
+                            ""
+                        ).lower()
+            
+                        # ------------------------------------------
                         # JSON / JSONB
-                        if isinstance(value, (dict, list)):
-                            value = Json(
-                                value,
-                                dumps=lambda x: json.dumps(
-                                    x,
+                        # ------------------------------------------
+                        if column_type in ("json", "jsonb"):
+            
+                            if value is None:
+                                values.append("NULL")
+                            else:
+                                json_value = json.dumps(
+                                    value,
                                     ensure_ascii=False
                                 )
+            
+                                escaped = (
+                                    json_value
+                                    .replace("\\", "\\\\")
+                                    .replace("'", "''")
+                                )
+            
+                                if column_type == "jsonb":
+                                    values.append(
+                                        f"E'{escaped}'::jsonb"
+                                    )
+                                else:
+                                    values.append(
+                                        f"E'{escaped}'::json"
+                                    )
+            
+                        # ------------------------------------------
+                        # سایر انواع داده
+                        # ------------------------------------------
+                        else:
+            
+                            values.append(
+                                cur.mogrify(
+                                    "%s",
+                                    (value,)
+                                ).decode("utf-8")
                             )
-
-                        values.append(
-                            cur.mogrify(
-                                "%s",
-                                (value,)
-                            ).decode("utf-8")
-                        )
-
+            
                     values_sql = ", ".join(values)
-
+            
                     output.append(
                         f'INSERT INTO "{table_name}" '
                         f'({columns_sql}) '
                         f'VALUES ({values_sql});'
                     )
-
+            
                 output.append("")
 
             # ==================================================
